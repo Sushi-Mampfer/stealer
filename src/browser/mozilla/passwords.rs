@@ -8,13 +8,13 @@ use base64::prelude::*;
 use der_parser::ber;
 use sha1::{Sha1, Digest};
 use ring::pbkdf2::PBKDF2_HMAC_SHA256;
-use aes::{self, cipher::{block_padding::Pkcs7, generic_array::GenericArray, typenum::{self}, BlockDecryptMut, KeyIvInit}};
+use aes::{Aes256, cipher::{block_padding::Pkcs7, generic_array::GenericArray, typenum::{self}, BlockDecryptMut, KeyIvInit}};
 use cbc::Decryptor;
 use des::TdesEde3;
 
 use rusqlite::Connection;
 
-type Aes256CbcDec = Decryptor<aes::Aes256>;
+type Aes256CbcDec = Decryptor<Aes256>;
 type TripleDesCbcDec = Decryptor<TdesEde3>;
 
 static CKA_ID: &[u8; 16] = b"\xf8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01";
